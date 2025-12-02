@@ -1,0 +1,256 @@
+import os  # operating system interface (e.g. file paths, directories)
+import glob  # file pattern matching (e.g. *.txt)
+from Bio.Seq import translate as t  # translate nucleotide to amino acid, alias as t
+from Bio.Seq import Seq  # Biopython object for working with biological sequences
+from multiprocessing import get_context  # parallel processing with context control
+import timeit  # timing execution of small code snippets
+import pandas as pd  # data analysis and manipulation library
+from itertools import product  # Cartesian product of input iterables
+
+os.chdir('')
+
+def convert(y_n):
+    '''
+    converts the Sample_x_merged.fastq file to a .fasta file
+    if a .fasta file is found in the directory it is removed.
+    '''
+    create_fasta = True
+    fastas = glob.glob('*.fasta')
+    if len(fastas) > 0:
+        for a in fastas:
+            os.system('rm {}'.format(a))
+            create_fasta = True
+            # else:
+            #     create_fasta = False
+            #     print('fasta already exists, not overwriting.')
+    if create_fasta:
+        for f in glob.glob('*extended*.fastq'):
+            os.system(f"paste - - - - < {f} | cut -f 1,2 | sed 's/^@/>/' | tr '\t' '\n' > {f.split('.fastq')[0]}.fasta")
+            print('{} successfully converted to .fasta'.format(f))
+
+            def process_fasta_line(line):
+    line = line.split('\n')[0]
+    seq_num = 0
+    dna_lines = 0
+    
+    ### NEED TO MODIFY
+    START_AA_num = 191 ## CHANGE TO 1st AA 
+    Lib_Mut_Set = [201, 246, 247] #Positions with encoded mutations
+    
+    WT = 'GGAACTGTCTCAATCCAGGGAAACGCGTCTGAGATGGAGGCGGCGTTTGCAGTAGTGCCCCACTTTTTAAAGTTACCTATCAAGATGTTGATGGGGGACCACGAGGGGATGAGTCCTTCTCTGACGCACTTAACGGGCCATTTTTTCGGAGTCTACGATGGTCACGGAGGCAGCAAAGTGGCAGATTACTGTCGTGAC'
+    WT_AA_SEQ = t(WT[0:]) #Translation is in 1st reading frame, ends early (2 extra bp)
+    WT_AA_SEQ_resi = list(range(len(WT_AA_SEQ)))
+    mutated_pos_set = [m - START_AA_num for m in Lib_Mut_Set]
+    
+    for i in reversed(mutated_pos_set): #reverse since .pop() method removes member and is not smart enough to remember
+        WT_AA_SEQ_resi.pop(i)
+   
+    E201 = set('AGILPVFWYDERHKSTCMNQ')
+    G246 = set('AGILPVFWYDERHKSTCMNQ')
+    G247 = set('AGILPVFWYDERHKSTCMNQ')
+    Mut_Sets = [E201, G246, G247]
+    seq_dict = {}
+    mutation_dict = {}
+
+    if not line.startswith('>'):
+        seq = line
+        dna_lines += 1
+        if len(seq) == 198 and 'N' not in seq:
+            aa_seq = t(seq[0:])
+# =============================================================================
+#### ONLY NEEDED IF Amplicon in reverse; sometimes they merge in reverse
+            if not aa_seq.startswith('GTV'):
+                seq_class = Seq(seq)
+                aa_seq = str(t(str(seq_class.reverse_complement())[0:]))
+# =============================================================================
+                ### DONE MODIFYING?
+
+            WT_MATCH = [1 for i in WT_AA_SEQ_resi if aa_seq[i]!=WT_AA_SEQ[i]] #creates a vector of "1" for each sequence with mutations from WT sequence, excluding the library mutants
+            if WT_MATCH.count(1)<2: #Decrease for "in design" only
+                if '*' not in aa_seq:
+                    MUT_MATCH = [1 for i,j in enumerate(mutated_pos_set) if aa_seq[j] not in(Mut_Sets[i])] #creates a vector of "1" for each sequence with non-encoded library mutants
+                    if MUT_MATCH.count(1)<1: #Decrease for "in design" only
+                        seq_num += 1
+                        seq_dict[aa_seq] = 1
+                        mutation_str = ''
+                        for mutation in mutated_pos_set:
+                            mutation_str += aa_seq[mutation]
+        
+                        mutation_dict[mutation_str] = 1
+    return [seq_dict,mutation_dict, seq_num, dna_lines]
+
+def condense_dictionaries(dict_list):
+    condensed_dict = {}
+    for d in dict_list:
+        for key, value in d.items():
+            try:
+                condensed_dict[key] += value
+            except:
+                condensed_dict[key] = value
+    return condensed_dict
+
+def convertTuple(tup):
+    str = ''.join(tup)
+    return str
+
+def get_freq_fasta_mp():
+    try:
+        print('Analyzing fasta file now.')
+        for fa in glob.glob('*.fasta'):
+            lines = open(fa)
+            if os.cpu_count() > 1:
+                p2 = get_context('fork').Pool(os.cpu_count()-1)
+            else:
+                p2 = get_context('fork').Pool()
+
+            results = p2.map(process_fasta_line, lines)
+            p2.close()
+            p2.join()
+
+            s_dicts = [results[i][0] for i in range(len(results))]
+            m_dicts = [results[i][1] for i in range(len(results))]
+
+            if os.cpu_count() > 1:
+                p = get_context('fork').Pool(os.cpu_count()-1)
+            else:
+                p = get_context('fork').Pool()
+
+            seq_dict, mutation_dict = p.map(condense_dictionaries, [s_dicts, m_dicts])
+
+            p.close()
+            p.join()
+
+            seq_num = 0
+            dna_lines = 0
+
+            for result in results:
+                seq_num += result[2]
+                dna_lines += result[3]
+
+            print(f'Creating csv file now. {seq_num} correct reads found from {dna_lines} total sequences')
+            if 'Output' not in os.listdir():
+                os.mkdir('Output')
+
+            count_outfile = open(f"Output/Count_{fa.split('merged_')[1].split('.extended')[0].split('S')[0].split('_')[0]}.csv", 'w')
+            count_outfile.write(f'{seq_num}')
+            count_outfile.close()
+
+            seq_outfile = open(f"Output/Sequences_{fa.split('merged_')[1].split('.extended')[0].split('S')[0].split('_')[0]}.csv", 'w')
+            for sequence in sorted(seq_dict, key=seq_dict.get, reverse=True):
+                seq_outfile.write('{}, {}\n'.format(sequence, seq_dict[sequence]/float(seq_num)))
+                seq_dict.pop(sequence)
+            seq_outfile.close()
+
+            mutation_outfile = open(f"Output/Mutation_{fa.split('merged_')[1].split('.extended')[0].split('S')[0].split('_')[0]}.csv", 'w')
+
+            for mutation in sorted(mutation_dict, key=mutation_dict.get, reverse=True):
+                mutation_outfile.write('{}, {}\n'.format(mutation, mutation_dict[mutation]/float(seq_num)))
+                mutation_dict.pop(mutation)
+            mutation_outfile.close()
+            print('CSV File successfully created.')
+    except:
+        try:
+            p2.close()
+            p2.join()
+            return
+        except:
+            p.close()
+            p.join()
+            return
+        
+        path = os.getcwd()
+folders = [ name for name in os.listdir(path) if os.path.isdir(os.path.join(path, name))]
+merge_read_data = pd.DataFrame(columns=["File","Total Read", "Merged Reads", "Correct Length Merged Reads"])
+
+# #Merge R1 and R2 together with FLASH
+for fold in folders:
+    os.chdir(fold)
+    f = glob.glob('*.fastq.gz')
+    a_time = timeit.default_timer()
+    os.system(f"/Users/samdswift/projects/FLASH-1.2.11/flash {f[0]} {f[1]} -M 240 -o merged_{f[0].split('_R')[0]} 2>&1 | tee flash.log") #-M is maximum merge overlap length; -m is minimum merge overlap length
+    h = glob.glob('*.hist')
+    x = pd.read_csv(h[0], sep='\t', header=None)
+    sum_reads = x[1].sum(axis=0)
+    cor_read_length = x[1][x[0]==189].values[0]
+    with open(r'flash.log', 'r') as file:
+        lines = file.readlines()
+        for line in lines: 
+            if line.find('Total pairs:') !=-1:
+                total_pairs = line
+    total_reads = int(total_pairs.split(':')[-1].split(' ')[-1].split('\n')[0])
+    merge_read_data.loc[len(merge_read_data.index)] = [fold, total_reads, sum_reads, cor_read_length]
+    print(f'FLASh run time for {fold} is: ', timeit.default_timer()-a_time)
+    os.chdir('../')
+
+    #Convert the merged fastq to a fasta for easier viewing
+for fold in folders:
+    os.chdir(fold)
+    b_time = timeit.default_timer()
+    convert(glob.glob('merged*.extended*.fastq')[0])
+    print(f'Conversion time for {fold} is: ', timeit.default_timer()-b_time)
+    os.chdir('../')
+
+    for fold in folders:
+    os.chdir(fold)
+    c_time = timeit.default_timer()
+    print(f'Running {fold} sequences now. \n')
+    get_freq_fasta_mp()
+    print(f'Time to run FASTA Frequency for {fold} is: ' , timeit.default_timer()-c_time)
+    os.chdir('../')
+
+    #Compile all         
+all_muts_df = pd.DataFrame(columns=[0,1])
+all_seqs_df = pd.DataFrame(columns=[0,1])
+for fold in folders:
+    name = fold
+    os.chdir(fold)
+    os.chdir('Output')
+    count_file = glob.glob('Count*.csv')
+    count_df = pd.read_csv(count_file[0], header=None)
+    count = count_df.iloc[0,0]
+    mut_file = glob.glob('Mut*')
+    mut_df = pd.read_csv(mut_file[0], header=None)
+    mut_df[fold+' Count']=mut_df[1]*count
+    mut_df = mut_df.drop(1, axis=1)
+    
+    seq_file = glob.glob('Seq*')
+    seq_df = pd.read_csv(seq_file[0], header=None)
+    seq_df[fold+' Count']=seq_df[1]*count
+    seq_df = seq_df.drop(1, axis=1)
+    
+    all_muts_df = pd.merge(all_muts_df, mut_df, on=0, how='outer')
+    all_seqs_df = pd.merge(all_seqs_df, seq_df, on=0, how='outer')
+    os.chdir('../../')
+
+    merge_read_data_2 = pd.DataFrame()
+merge_read_data_2['% Merge Reads'] = merge_read_data['Merged Reads']/ merge_read_data['Total Read']
+merge_read_data_2['% Correct Length'] = merge_read_data['Correct Length Merged Reads']/merge_read_data['Merged Reads']    
+merge_read_data_full = pd.merge(merge_read_data, merge_read_data_2, left_index=True, right_index=True)
+
+import pandas as pd
+
+# Load CSV (update with your actual filename)
+df = pd.read_csv('/Users/samdswift/Desktop/amp2run/Region 2/Output/Mutation_884416-2.csv', header=None, names=['Mutant', 'Frequency'])
+
+# Define WT sequence
+wt = df.iloc[0, 0]
+
+# Prepare table: rows = mutant AA, columns = position
+positions = list(range(1, len(wt)+1))
+mutants = sorted(set(''.join(df['Mutant'])))
+table = pd.DataFrame('', index=mutants, columns=positions)
+
+# Populate table with single mutants only
+for _, row in df.iterrows():
+    seq = row['Mutant']
+    freq = row['Frequency']
+    
+    # Count mutations
+    diffs = [(i, wt[i], seq[i]) for i in range(len(wt)) if wt[i] != seq[i]]
+    
+    if len(diffs) == 1:  # Only consider single mutants
+        i, _, mut = diffs[0]
+        table.at[mut, i+1] = f"{freq:.15%}"
+
+# Display table
+table.to_csv("single_mutation_table.csv")
