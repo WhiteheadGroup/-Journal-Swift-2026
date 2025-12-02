@@ -2,7 +2,7 @@
 #SDS
 
 #Set Working Directory
-setwd("/Users/samdswift/Desktop")
+setwd("")
 library(ggplot2)
 
 #Set Initiaal Conditions
