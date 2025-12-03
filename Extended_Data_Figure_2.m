@@ -1,4 +1,4 @@
-%% Extended Data Figure 2 – Ultrasensitive Switch
+%%Switch Phase Space
 clear; 
 clc;
 
