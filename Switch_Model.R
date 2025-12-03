@@ -1,4 +1,4 @@
-#Ultrasensitive-Switch Model
+#Switch Model
 #SDS
 
 #Set Working Directory
