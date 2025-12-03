@@ -1,4 +1,4 @@
-%% Extended Data Figure 1 - Inverter
+%%Inverter Phase Space
 clear; clc;
 
 opts = optimoptions('fsolve','Display','off', ...
